@@ -1,125 +1,130 @@
 package antigate
 
 import (
+	"bytes"
 	"encoding/base64"
-	"encoding/xml"
 	"errors"
 	"fmt"
 	"io/ioutil"
 	"net/http"
 	"net/url"
 	"strconv"
-	"strings"
 )
 
-type LoadStat struct {
-	Waiting                  int     `xml:"waiting"`
-	WaitingRU                int     `xml:"waitingRU"`
-	Load                     float32 `xml:"load"`
-	Minbid                   float64 `xml:"minbid"`
-	MinbidRU                 float64 `xml:"minbidRU"`
-	AverageRecognitionTime   float64 `xml:"averageRecognitionTime"`
-	AverageRecognitionTimeRU float64 `xml:"averageRecognitionTimeRU"`
-}
-
-type Account struct {
-	ApiKey string
+// Client - AntiGate Client.
+type Client struct {
+	URL string
+	Key string
 }
 
 const (
+	// BaseURL - AntiGate base url.
 	BaseURL = "http://anti-captcha.com"
 )
 
-func New(api_key string) Account {
-	return Account{ApiKey: api_key}
+var captchaOKPrefix = []byte("OK|")
+var captchaNotReady = []byte("CAPCHA_NOT_READY")
+
+// New - Creates new AntiGate client.
+func New(key string) *Client {
+	return &Client{
+		URL: BaseURL,
+		Key: key,
+	}
 }
 
-func (a Account) UploadImage(file_bytes []byte) (int, error) {
-	body := base64.StdEncoding.EncodeToString(file_bytes)
-	url_api := BaseURL + "/in.php"
+// UploadImage - Uploads image to AntiGate API.
+func (client *Client) UploadImage(image []byte) (captcha int, err error) {
+	// Encode image body with base64
+	body := base64.StdEncoding.EncodeToString(image)
 	params := url.Values{
-		"key":    {a.ApiKey},
+		"key":    {client.Key},
 		"method": {"base64"},
 		"body":   {body},
 	}
-	resp, err_post := http.PostForm(url_api, params)
-	if err_post != nil {
-		return 0, err_post
+
+	// Upload image
+	resp, err := http.PostForm(client.GetURL("/in.php"), params)
+	if err != nil {
+		return
 	}
 	defer resp.Body.Close()
-	data, err_read := ioutil.ReadAll(resp.Body)
-	if err_read != nil {
-		return 0, err_read
-	}
-	res := string(data)
 
-	if strings.HasPrefix(res, "OK|") {
-		captcha_id, err_atoi := strconv.Atoi(res[3:])
-		if err_atoi != nil {
-			return 0, err_atoi
-		}
-		return captcha_id, nil
-	} else {
-		return 0, errors.New(res)
+	// Read response body
+	data, err := ioutil.ReadAll(resp.Body)
+	if err != nil {
+		return
 	}
+
+	// If response starts with OK|
+	// Parse the rest as captcha ID
+	if bytes.HasPrefix(data, captchaOKPrefix) {
+		return strconv.Atoi(string(data[3:]))
+	}
+
+	// Create error from response body otherwise
+	err = errors.New(string(data))
+
+	return
 }
 
-func (a Account) CheckStatus(captcha_id int) (bool, string, error) {
-	url_api := fmt.Sprintf("%s/res.php?key=%s&action=get&id=%d", BaseURL, a.ApiKey, captcha_id)
-	resp, err_get := http.Get(url_api)
-	if err_get != nil {
-		return false, "", err_get
+// GetStatus -
+func (client *Client) GetStatus(captcha int) (ok bool, result string, err error) {
+	// Get status from API
+	resp, err := http.Get(client.GetURL("/res.php?key=%s&action=get&id=%d", client.Key, captcha))
+	if err != nil {
+		return
 	}
 	defer resp.Body.Close()
-	data, err_read := ioutil.ReadAll(resp.Body)
-	if err_read != nil {
-		return false, "", err_read
+
+	// Read response body
+	data, err := ioutil.ReadAll(resp.Body)
+	if err != nil {
+		return
 	}
-	res := string(data)
-	fmt.Println(res)
-	if strings.HasPrefix(res, "OK|") {
-		return true, res[3:], nil
-	} else if res == "CAPCHA_NOT_READY" {
-		return false, "", nil
-	} else {
-		return false, "", errors.New(res)
+
+	// If response has prefix OK captcha is solved
+	// Get rest of the message as captcha text
+	if ok = bytes.HasPrefix(data, captchaOKPrefix); ok {
+		result = string(data[3:])
+		return
 	}
+
+	// If response is CAPCHA_NOT_READY return no error
+	if bytes.Equal(data, captchaNotReady) {
+		return
+	}
+
+	// Make error from response data
+	err = errors.New(string(data))
+
+	return
 }
 
-func (a Account) GetBalance() (float64, error) {
-	url_balance := fmt.Sprintf("%s/res.php?key=%s&action=getbalance", BaseURL, a.ApiKey)
-	resp, err_get := http.Get(url_balance)
-	if err_get != nil {
-		return 0.0, err_get
+// GetBalance - Gets account balance.
+func (client *Client) GetBalance() (balance float64, err error) {
+	// Get balance from API
+	resp, err := http.Get(client.GetURL("/res.php?key=%s&action=getbalance", client.Key))
+	if err != nil {
+		return
 	}
 	defer resp.Body.Close()
-	data, err_read := ioutil.ReadAll(resp.Body)
-	if err_read != nil {
-		return 0.0, err_read
+
+	// Read response body
+	data, err := ioutil.ReadAll(resp.Body)
+	if err != nil {
+		return
 	}
-	balance, err_parse := strconv.ParseFloat(string(data), 64)
-	if err_parse != nil {
-		return 0.0, err_parse
-	}
-	return balance, nil
+
+	// Parse float and return
+	balance, err = strconv.ParseFloat(string(data), 64)
+	return
 }
 
-func GetSystemStat() (*LoadStat, error) {
-	var load_stat *LoadStat
-	url_stat := BaseURL + "/load.php"
-	resp, err_get := http.Get(url_stat)
-	if err_get != nil {
-		return load_stat, err_get
+// GetURL - Gets full api url.
+func (client *Client) GetURL(path string, v ...interface{}) string {
+	if len(v) > 0 {
+		path = fmt.Sprintf(path, v...)
 	}
-	defer resp.Body.Close()
-	data, err_read := ioutil.ReadAll(resp.Body)
-	if err_read != nil {
-		return load_stat, err_read
-	}
-	err_unmarshal := xml.Unmarshal(data, &load_stat)
-
-	if err_unmarshal != nil {
-		return load_stat, err_unmarshal
-	}
-	return load_stat, nil
+	return fmt.Sprintf("%s%s", client.URL, path)
 }
