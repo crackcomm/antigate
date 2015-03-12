@@ -10,12 +10,15 @@ import (
 	"net/http"
 	"net/url"
 	"strconv"
+	"time"
 )
 
 // Client - AntiGate Client.
 type Client struct {
 	URL string
 	Key string
+
+	CheckInterval time.Duration // solve check interval
 }
 
 const (
@@ -27,11 +30,32 @@ var captchaOKPrefix = []byte("OK|")
 var captchaNotReady = []byte("CAPCHA_NOT_READY")
 
 // New - Creates new AntiGate client.
+// Default CheckInterval is 2.5 seconds.
 func New(key string) *Client {
 	return &Client{
-		URL: BaseURL,
-		Key: key,
+		Key:           key,
+		CheckInterval: 2500 * time.Millisecond,
 	}
+}
+
+// Solve - Solves captcha.
+func (client *Client) Solve(image []byte) (result string, err error) {
+	// Upload captcha
+	captcha, err := client.UploadImage(image)
+	if err != nil {
+		return
+	}
+
+	// Start ticking every client.CheckInterval
+	for _ = range time.Tick(client.CheckInterval) {
+		var ok bool
+		ok, result, err = client.GetStatus(captcha)
+		if err != nil || ok {
+			return
+		}
+	}
+
+	return
 }
 
 // UploadImage - Uploads image to AntiGate API.
@@ -124,6 +148,9 @@ func (client *Client) GetBalance() (balance float64, err error) {
 
 // GetURL - Gets full api url.
 func (client *Client) GetURL(path string, v ...interface{}) string {
+	if client.URL == "" {
+		client.URL = BaseURL
+	}
 	if len(v) > 0 {
 		path = fmt.Sprintf(path, v...)
 	}
