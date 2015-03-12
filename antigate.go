@@ -3,6 +3,7 @@ package antigate
 import (
 	"bytes"
 	"encoding/base64"
+	"encoding/xml"
 	"errors"
 	"fmt"
 	"io/ioutil"
@@ -127,4 +128,35 @@ func (client *Client) GetURL(path string, v ...interface{}) string {
 		path = fmt.Sprintf(path, v...)
 	}
 	return fmt.Sprintf("%s%s", client.URL, path)
+}
+
+// LoadStat - AntiGate load statistics.
+type LoadStat struct {
+	Waiting                  int     `xml:"waiting"`
+	WaitingRU                int     `xml:"waitingRU"`
+	Load                     float32 `xml:"load"`
+	Minbid                   float64 `xml:"minbid"`
+	MinbidRU                 float64 `xml:"minbidRU"`
+	AverageRecognitionTime   float64 `xml:"averageRecognitionTime"`
+	AverageRecognitionTimeRU float64 `xml:"averageRecognitionTimeRU"`
+}
+
+// GetSystemStat - Gets AntiGate load statistics.
+func GetSystemStat() (stats *LoadStat, err error) {
+	// Get stats from API
+	resp, err := http.Get(BaseURL + "/load.php")
+	if err != nil {
+		return
+	}
+	defer resp.Body.Close()
+
+	// Read response body
+	data, err := ioutil.ReadAll(resp.Body)
+	if err != nil {
+		return
+	}
+
+	// Unmarshal XML and return
+	err = xml.Unmarshal(data, &stats)
+	return
 }
