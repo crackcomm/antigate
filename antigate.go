@@ -11,6 +11,8 @@ import (
 	"net/url"
 	"strconv"
 	"time"
+
+	log "github.com/golang/glog"
 )
 
 // Client - AntiGate Client.
@@ -19,6 +21,8 @@ type Client struct {
 	Key string
 
 	CheckInterval time.Duration // solve check interval
+	RetryInterval time.Duration // retry interval when too much traffic
+	MaxRetries    int
 }
 
 const (
@@ -26,17 +30,45 @@ const (
 	BaseURL = "http://anti-captcha.com"
 )
 
-var captchaOKPrefix = []byte("OK|")
-var captchaNotReady = []byte("CAPCHA_NOT_READY")
+var (
+	ErrNoSlots         = errors.New("No slots available")
+	ErrCaptchaNotReady = errors.New("Captcha is not yet solved")
+
+	ErrorNames = map[string]error{
+		"ERROR_NO_SLOT_AVAILABLE": ErrNoSlots,
+		"CAPCHA_NOT_READY":        ErrCaptchaNotReady,
+	}
+)
 
 // New - Creates new AntiGate client.
-// Default CheckInterval is 2.5 seconds.
+// Default values:
+// 	CheckInterval - 2.5 seconds
+// 	RetryInterval - 2.5 seconds
+// 	MaxRetries    - 35
 func New(key string) *Client {
 	return &Client{
 		Key:           key,
+		MaxRetries:    35,
 		CheckInterval: 2500 * time.Millisecond,
+		RetryInterval: 2500 * time.Millisecond,
 	}
 }
+
+// GetError - Gets Antigate error by name.
+func GetError(text string) error {
+	err, ok := ErrorNames[text]
+	if ok {
+		return err
+	}
+	return errors.New(text)
+}
+
+// GetErrorBytes - Gets Antigate error by name.
+func GetErrorBytes(text []byte) error {
+	return GetError(string(text))
+}
+
+var captchaOKPrefix = []byte("OK|")
 
 // Solve - Solves captcha.
 func (client *Client) Solve(image []byte) (result string, err error) {
@@ -50,7 +82,7 @@ func (client *Client) Solve(image []byte) (result string, err error) {
 	for _ = range time.Tick(client.CheckInterval) {
 		var ok bool
 		ok, result, err = client.GetStatus(captcha)
-		if err != nil || ok {
+		if ok || err != nil {
 			return
 		}
 	}
@@ -60,6 +92,35 @@ func (client *Client) Solve(image []byte) (result string, err error) {
 
 // UploadImage - Uploads image to AntiGate API.
 func (client *Client) UploadImage(image []byte) (captcha int, err error) {
+	return client.uploadImage(0, image)
+}
+
+// GetStatus -
+func (client *Client) GetStatus(captcha int) (ok bool, result string, err error) {
+	return client.getStatus(0, captcha)
+}
+
+// GetBalance - Gets account balance.
+func (client *Client) GetBalance() (balance float64, err error) {
+	// Get balance from API
+	resp, err := http.Get(client.GetURL("/res.php?key=%s&action=getbalance", client.Key))
+	if err != nil {
+		return
+	}
+	defer resp.Body.Close()
+
+	// Read response body
+	data, err := ioutil.ReadAll(resp.Body)
+	if err != nil {
+		return
+	}
+
+	// Parse float and return
+	balance, err = strconv.ParseFloat(string(data), 64)
+	return
+}
+
+func (client *Client) uploadImage(retry int, image []byte) (captcha int, err error) {
 	// Encode image body with base64
 	body := base64.StdEncoding.EncodeToString(image)
 	params := url.Values{
@@ -88,13 +149,18 @@ func (client *Client) UploadImage(image []byte) (captcha int, err error) {
 	}
 
 	// Create error from response body otherwise
-	err = errors.New(string(data))
+	err = GetErrorBytes(data)
+
+	if err == ErrNoSlots && retry < client.MaxRetries {
+		<-time.After(client.RetryInterval)
+		log.V(1).Infof("Retrying UploadImage time %d", retry+1)
+		return client.uploadImage(retry+1, image)
+	}
 
 	return
 }
 
-// GetStatus -
-func (client *Client) GetStatus(captcha int) (ok bool, result string, err error) {
+func (client *Client) getStatus(retry int, captcha int) (ok bool, result string, err error) {
 	// Get status from API
 	resp, err := http.Get(client.GetURL("/res.php?key=%s&action=get&id=%d", client.Key, captcha))
 	if err != nil {
@@ -115,34 +181,20 @@ func (client *Client) GetStatus(captcha int) (ok bool, result string, err error)
 		return
 	}
 
-	// If response is CAPCHA_NOT_READY return no error
-	if bytes.Equal(data, captchaNotReady) {
-		return
-	}
-
 	// Make error from response data
-	err = errors.New(string(data))
+	err = GetErrorBytes(data)
 
-	return
-}
-
-// GetBalance - Gets account balance.
-func (client *Client) GetBalance() (balance float64, err error) {
-	// Get balance from API
-	resp, err := http.Get(client.GetURL("/res.php?key=%s&action=getbalance", client.Key))
-	if err != nil {
-		return
-	}
-	defer resp.Body.Close()
-
-	// Read response body
-	data, err := ioutil.ReadAll(resp.Body)
-	if err != nil {
-		return
+	// If err is captcha not ready return empty error
+	if err == ErrCaptchaNotReady {
+		err = nil
 	}
 
-	// Parse float and return
-	balance, err = strconv.ParseFloat(string(data), 64)
+	if err == ErrNoSlots && retry < client.MaxRetries {
+		<-time.After(client.RetryInterval)
+		log.V(1).Infof("Retrying GetStatus time %d", retry+1)
+		return client.getStatus(retry+1, captcha)
+	}
+
 	return
 }
 
