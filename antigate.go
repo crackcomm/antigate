@@ -11,8 +11,6 @@ import (
 	"net/url"
 	"strconv"
 	"time"
-
-	log "github.com/golang/glog"
 )
 
 // Client - AntiGate Client.
@@ -31,9 +29,13 @@ const (
 )
 
 var (
-	ErrNoSlots         = errors.New("No slots available")
+	// ErrNoSlots - Error returned when API has no available workers.
+	ErrNoSlots = errors.New("No slots available")
+
+	// ErrCaptchaNotReady - Error returned when captcha is work in progress.
 	ErrCaptchaNotReady = errors.New("Captcha is not yet solved")
 
+	// ErrorNames - Errors by name returned from API.
 	ErrorNames = map[string]error{
 		"ERROR_NO_SLOT_AVAILABLE": ErrNoSlots,
 		"CAPCHA_NOT_READY":        ErrCaptchaNotReady,
@@ -153,7 +155,6 @@ func (client *Client) uploadImage(retry int, image []byte) (captcha int, err err
 
 	if err == ErrNoSlots && retry < client.MaxRetries {
 		<-time.After(client.RetryInterval)
-		log.V(1).Infof("Retrying UploadImage time %d", retry+1)
 		return client.uploadImage(retry+1, image)
 	}
 
@@ -191,7 +192,6 @@ func (client *Client) getStatus(retry int, captcha int) (ok bool, result string,
 
 	if err == ErrNoSlots && retry < client.MaxRetries {
 		<-time.After(client.RetryInterval)
-		log.V(1).Infof("Retrying GetStatus time %d", retry+1)
 		return client.getStatus(retry+1, captcha)
 	}
 
